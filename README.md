@@ -75,3 +75,5 @@ If your build process requires secrets, or you want to include a secret in your 
 When submitting a plugin, please consider our [Acceptable Use Policy](<https://github.com/goatcorp/FFXIVQuickLauncher/wiki/Acceptable-Use-Policy-(Official-Plugin-Repository)>) & [Terms of Service](<https://github.com/goatcorp/FFXIVQuickLauncher/wiki/Terms-and-Conditions-of-Use-(XIVLauncher,-Dalamud-&-Official-Plugin-Repository)>), which, for example, detail the rights you need to grant us when uploading a plugin to this repository. 
 
 Please review the [plugin adoption policy](https://dalamud.dev/faq/adoption) to understand what happens if you abandon your plugin. The FAQ also provides instructions on how to submit a plugin if taking over from another developer.
+
+<!-- FFXIVPlugins fork: AI review smoke test marker -->
