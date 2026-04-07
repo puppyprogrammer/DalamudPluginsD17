@@ -44,7 +44,7 @@ jobs:
       with:
         repository: puppyprogrammer/PluginDistD17
         path: output
-        token: ${{ secrets.DIST_PUSH_TOKEN }}
+        ssh-key: ${{ secrets.DIST_SSH_KEY }}
         persist-credentials: true
         ref: main
 
@@ -87,9 +87,9 @@ jobs:
     - name: Push plugin dist
       uses: ad-m/github-push-action@master
       with:
-        github_token: ${{ secrets.DIST_PUSH_TOKEN }}
         directory: output
         repository: puppyprogrammer/PluginDistD17
+        ssh: true
         branch: main
 
     - name: Signal XLWeb commit
