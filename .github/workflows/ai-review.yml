@@ -1,0 +1,160 @@
+name: AI Preliminary Review
+
+# FFXIVPlugins fork: every PR gets a Claude-authored advisory review
+# posted as a sticky comment. This is preliminary only — final approval
+# and merge are always performed by a human maintainer.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Claude advisory review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Compute diff vs base
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch origin "$BASE_SHA" --depth=1
+          # Cap the diff so we don't blow the context window on huge PRs.
+          git diff "$BASE_SHA"...HEAD -- '*.toml' '*.md' > /tmp/diff.txt
+          DIFF_BYTES=$(wc -c < /tmp/diff.txt)
+          echo "diff_bytes=$DIFF_BYTES" >> "$GITHUB_OUTPUT"
+          if [ "$DIFF_BYTES" -gt 60000 ]; then
+            head -c 60000 /tmp/diff.txt > /tmp/diff.trunc
+            echo "" >> /tmp/diff.trunc
+            echo "...[diff truncated at 60KB]..." >> /tmp/diff.trunc
+            mv /tmp/diff.trunc /tmp/diff.txt
+          fi
+
+      - name: List touched manifests
+        id: manifests
+        run: |
+          git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD \
+            | grep -E '^(stable|testing)/[^/]+/manifest\.toml$' \
+            > /tmp/touched-manifests.txt || true
+          echo "count=$(wc -l < /tmp/touched-manifests.txt)" >> "$GITHUB_OUTPUT"
+          cat /tmp/touched-manifests.txt || true
+
+      - name: Gather manifest contents
+        run: |
+          : > /tmp/manifests-bundle.txt
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            [ -f "$f" ] || continue
+            echo "===== FILE: $f =====" >> /tmp/manifests-bundle.txt
+            cat "$f" >> /tmp/manifests-bundle.txt
+            echo "" >> /tmp/manifests-bundle.txt
+          done < /tmp/touched-manifests.txt
+
+      - name: Build prompt
+        run: |
+          {
+            echo "You are reviewing a pull request to FFXIVPlugins, a community-run"
+            echo "plugin distribution for Final Fantasy XIV. Plugin manifests live at"
+            echo "stable/<Name>/manifest.toml and point at an external Git repo + commit"
+            echo "that gets built by Plogon and shipped to users' game processes as"
+            echo "native code."
+            echo ""
+            echo "Your job is a SECURITY-ORIENTED PRELIMINARY REVIEW. You are advisory"
+            echo "only — a human maintainer will make the final merge decision. Be"
+            echo "concise. Be specific. Don't lecture about general best practices;"
+            echo "only flag what's actually in this diff."
+            echo ""
+            echo "Please respond in this exact markdown structure:"
+            echo ""
+            echo "## Summary"
+            echo "(1-2 sentences: what does this PR do?)"
+            echo ""
+            echo "## Risk assessment"
+            echo "**Level:** LOW | MEDIUM | HIGH"
+            echo "(one paragraph justifying the level)"
+            echo ""
+            echo "## Findings"
+            echo "(bulleted list. each bullet = one concrete observation. include"
+            echo "manifest field issues, suspicious URLs, missing owners, unpinned"
+            echo "commits, anything that would trip a maintainer's eye. if nothing"
+            echo "is wrong, say so.)"
+            echo ""
+            echo "## Recommendation"
+            echo "(one of: APPROVE / APPROVE WITH NOTES / REQUEST CHANGES / BLOCK)"
+            echo "(plus one sentence why)"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Diff (filtered to .toml/.md)"
+            echo ""
+            echo '```diff'
+            cat /tmp/diff.txt
+            echo '```'
+            echo ""
+            echo "## Touched manifests in full"
+            echo ""
+            echo '```toml'
+            cat /tmp/manifests-bundle.txt
+            echo '```'
+          } > /tmp/prompt.txt
+          wc -c /tmp/prompt.txt
+
+      - name: Call Claude
+        id: claude
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+        run: |
+          if [ -z "$CLAUDE_API_KEY" ]; then
+            echo "review<<EOF" >> "$GITHUB_OUTPUT"
+            echo "_AI review skipped: \`CLAUDE_API_KEY\` secret is not set on the repository._" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PROMPT_JSON=$(jq -Rs . < /tmp/prompt.txt)
+          cat > /tmp/req.json <<EOF
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 2048,
+            "messages": [
+              { "role": "user", "content": $PROMPT_JSON }
+            ]
+          }
+          EOF
+          curl -sS https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $CLAUDE_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d @/tmp/req.json > /tmp/resp.json
+          REVIEW=$(jq -r '.content[0].text // (.error.message | "API error: " + .)' /tmp/resp.json)
+          {
+            echo "review<<CLAUDE_EOF"
+            echo "$REVIEW"
+            echo "CLAUDE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post / update review comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: ai-preliminary-review
+          message: |
+            ### FFXIVPlugins — AI Preliminary Review
+
+            > _Advisory only. A human maintainer makes the final merge decision._
+
+            ${{ steps.claude.outputs.review }}
+
+            <sub>Generated by `claude-haiku-4-5` on commit `${{ github.event.pull_request.head.sha }}` · diff size: ${{ steps.diff.outputs.diff_bytes }} bytes · touched manifests: ${{ steps.manifests.outputs.count }}</sub>
